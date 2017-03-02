@@ -759,6 +759,35 @@ class ORCA(logfileparser.Logfile):
                     self.logger.warning('Overwriting previous multipole moments with new values')
                     self.moments = [reference, dipole]
 
+        #Gradients during optimization
+        #------------------
+        #CARTESIAN GRADIENT
+        #------------------
+        #
+        #   1   Pt  :   -0.000108416   -0.000233441   -0.000066018
+        #   2   N   :   -0.000220378   -0.000315302   -0.000190168
+        #   3   N   :    0.000030835   -0.000284278    0.000167836
+        #   4   C   :   -0.000163166    0.001212741    0.000213012
+        #   5   H   :    0.000189591    0.000782142   -0.001899728
+        # ...
+        #
+
+        if line.strip() == "CARTESIAN GRADIENT":
+            self.skip_line(inputfile, 'dashes')
+
+            line = next(inputfile)
+            
+            if not hasattr(self, "grads"):
+                self.grads = []
+            
+            grads = []
+            for i in range(self.natom):
+                line = next(inputfile)
+                broken = line.split()
+                grads.append(list(map(float, broken[3:6])))
+
+            self.grads.append(grads)
+
     def parse_scf_condensed_format(self, inputfile, line):
         """ Parse the SCF convergence information in condensed format """
 
