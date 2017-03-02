@@ -274,7 +274,7 @@ class ORCA(logfileparser.Logfile):
             values = []
             targets = []
             line = next(inputfile)
-            while list(set(line.strip())) != ["."]:
+            while list(set(line.strip())) != ["."] and list(set(line.strip())) != ["-"]:
                 name = line[10:28].strip().lower()
                 value = float(line.split()[2])
                 target = float(line.split()[3])
