@@ -824,7 +824,12 @@ class ORCA(logfileparser.Logfile):
                 diis_active = False
             elif line[0].isdigit() and diis_active:
                 energy = float(line[1])
-                deltaE = float(line[2])
+                if (line[2].count('.') == 2):
+                    frist_decimal_index = line[2].index('.')
+                    line[4] = line[3]
+                    line[3] = line[2][frist_decimal_index+13:]
+                    line[2] = line[2][0:frist_decimal_index+13]
+                deltaE = float(line[2])                    
                 maxDP = float(line[3])
                 rmsDP = float(line[4])
                 self.scfvalues[-1].append([deltaE, maxDP, rmsDP])
