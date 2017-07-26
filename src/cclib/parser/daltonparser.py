@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
 #
-# This file is part of cclib (http://cclib.github.io), a library for parsing
-# and interpreting the results of computational chemistry packages.
+# Copyright (c) 2016, the cclib development team
 #
-# Copyright (C) 2006-2015, the cclib development team
-#
-# The library is free software, distributed under the terms of
-# the GNU Lesser General Public version 2.1 or later. You should have
-# received a copy of the license along with cclib. You can also access
-# the full license online at http://www.gnu.org/copyleft/lgpl.html.
+# This file is part of cclib (http://cclib.github.io) and is distributed under
+# the terms of the BSD 3-Clause License.
 
 """Parser for DALTON output files"""
 
@@ -16,7 +11,6 @@
 from __future__ import print_function
 
 import numpy
-
 
 from . import logfileparser
 from . import utils
@@ -57,6 +51,11 @@ class DALTON(logfileparser.Logfile):
         # If there is no symmetry, assume this.
         self.symlabels = ['Ag']
 
+        # Is the basis set from a single library file? This is true
+        # when the first line is BASIS, false for INTGRL/ATOMBASIS.
+        self.basislibrary = True
+
+
     def parse_geometry(self, lines):
         """Parse DALTON geometry lines into an atomcoords array."""
 
@@ -79,6 +78,17 @@ class DALTON(logfileparser.Logfile):
 
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
+        # extract the version number first
+        if line[4:30] == "This is output from DALTON":
+            if line.split()[5] == "release" or line.split()[5] == "(Release":
+                self.metadata["package_version"] = line.split()[6][6:]
+            else:
+                self.metadata["package_version"] = line.split()[5]
+
+        # Is the basis set from a single library file, or is it
+        # manually specified? See before_parsing().
+        if line[:6] == 'INTGRL'or line[:9] == 'ATOMBASIS':
+            self.basislibrary = False
 
         # This section at the start of geometry optimization jobs gives us information
         # about optimization targets (geotargets) and possibly other things as well.
@@ -166,7 +176,8 @@ class DALTON(logfileparser.Logfile):
             symmetry_atoms = []
             atommasses = []
             for cols in lines:
-                atomnos.append(self.table.number[cols[0]])
+                cols0 = ''.join([i for i in cols[0] if not i.isdigit()]) #remove numbers
+                atomnos.append(self.table.number[cols0])
                 if len(cols) == 3:
                     symmetry_atoms.append(int(cols[1][1]))
                     atommasses.append(float(cols[2]))
@@ -222,7 +233,17 @@ class DALTON(logfileparser.Logfile):
             assert "Total number of atoms:" in line
             self.set_attribute("natom", int(line.split()[-1]))
 
-            self.skip_lines(inputfile, ['b', 'basisname', 'b'])
+            # When using the INTGRL keyword and not pulling from the
+            # basis set library, the "Basis set used" line doesn't
+            # appear.
+            if not self.basislibrary:
+                self.skip_line(inputfile, 'b')
+            else:
+                #self.skip_lines(inputfile, ['b', 'basisname', 'b'])
+                line = next(inputfile)
+                line = next(inputfile)
+                self.metadata["basis_set"] = line.split()[4].strip('\"')
+                line = next(inputfile)
 
             line = next(inputfile)
             cols = line.split()
@@ -481,26 +502,8 @@ class DALTON(logfileparser.Logfile):
                     for i in range(sc):
                         orbital = inputfile.next()
 
-        #      Wave function specification
-        #      ============================
-        # @    Wave function type        >>> KS-DFT <<<
-        # @    Number of closed shell electrons          70
-        # @    Number of electrons in active shells       0
-        # @    Total charge of the molecule               0
-        #
-        # @    Spin multiplicity and 2 M_S                1         0
-        # @    Total number of symmetries                 4 (point group: C2h)
-        # @    Reference state symmetry                   1 (irrep name : Ag )
-        #
-        #     This is a DFT calculation of type: B3LYP
-        # ...
-        #
-        if "@    Number of electrons in active shells" in line:
-            self.unpaired_electrons = int(line.split()[-1])
-        if "@    Total charge of the molecule" in line:
-            self.set_attribute("charge", int(line.split()[-1]))
-        if "@    Spin multiplicity and 2 M_S" in line:
-            self.set_attribute("mult", int(line.split()[-2]))
+        if "Starting in Wave Function Section (SIRIUS)" in line:
+            self.section = "SIRIUS"
 
         #     Orbital specifications
         #     ======================
@@ -532,22 +535,56 @@ class DALTON(logfileparser.Logfile):
             self.set_attribute("nbasis", int(chomp[index]))
             self.nmo_per_symmetry = list(map(int, chomp[index+2:]))
             assert self.nbasis == sum(self.nmo_per_symmetry)
-        if "@    Occupied SCF orbitals" in line and not hasattr(self, 'homos'):
-            temp = line.split()
-            homos = int(temp[4])
-            self.set_attribute('homos', [homos - 1 + self.unpaired_electrons])
         if "Threshold for SCF convergence" in line:
             if not hasattr(self, "scftargets"):
                 self.scftargets = []
             scftarget = self.float(line.split()[-1])
             self.scftargets.append([scftarget])
 
-        #                   .--------------------------------------------.
-        #                   | Starting in Wave Function Section (SIRIUS) |
-        #                   `--------------------------------------------'
+        #      Wave function specification
+        #      ============================
+        # @    Wave function type        >>> KS-DFT <<<
+        # @    Number of closed shell electrons          70
+        # @    Number of electrons in active shells       0
+        # @    Total charge of the molecule               0
         #
-        if "Starting in Wave Function Section (SIRIUS)" in line:
-            self.section = "SIRIUS"
+        # @    Spin multiplicity and 2 M_S                1         0
+        # @    Total number of symmetries                 4 (point group: C2h)
+        # @    Reference state symmetry                   1 (irrep name : Ag )
+        #
+        #     This is a DFT calculation of type: B3LYP
+        # ...
+        #
+        if line.strip() == "Wave function specification":
+            self.skip_line(inputfile, 'e')
+            line = next(inputfile)
+            # Must be a coupled cluster calculation.
+            if line.strip() == '':
+                self.skip_lines(inputfile, ['b', 'Coupled Cluster', 'b'])
+            else:
+                assert "wave function" in line.lower()
+            line = next(inputfile)
+            assert "Number of closed shell electrons" in line
+            self.paired_electrons = int(line.split()[-1])
+            line = next(inputfile)
+            assert "Number of electrons in active shells" in line
+            self.unpaired_electrons = int(line.split()[-1])
+            line = next(inputfile)
+            assert "Total charge of the molecule" in line
+            self.set_attribute("charge", int(line.split()[-1]))
+            self.skip_line(inputfile, 'b')
+            line = next(inputfile)
+            assert "Spin multiplicity and 2 M_S" in line
+            self.set_attribute("mult", int(line.split()[-2]))
+            # Dalton only has ROHF, no UHF
+            if self.mult != 1:
+                self.metadata["unrestricted"] = True
+
+            if not hasattr(self, 'homos'):
+                self.set_attribute('homos', [(self.paired_electrons // 2) - 1])
+                if self.unpaired_electrons > 0:
+                    self.homos.append(self.homos[0])
+                    self.homos[0] += self.unpaired_electrons
 
         #  *********************************************
         #  ***** DIIS optimization of Hartree-Fock *****
@@ -737,6 +774,13 @@ class DALTON(logfileparser.Logfile):
         # @    Final gradient norm:           0.000003746706
         # ...
         #
+        if "Final HF energy" in line and not (hasattr(self, "mpenergies") or hasattr(self, "ccenergies")):
+            self.metadata["methods"].append("HF")
+        if "Final DFT energy" in line:
+            self.metadata["methods"].append("DFT")
+        if "This is a DFT calculation of type" in line:
+            self.metadata["functional"] = line.split()[-1]
+
         if "Final DFT energy" in line or "Final HF energy" in line:
             if not hasattr(self, "scfenergies"):
                 self.scfenergies = []
@@ -744,13 +788,22 @@ class DALTON(logfileparser.Logfile):
             self.scfenergies.append(utils.convertor(float(temp[-1]), "hartree", "eV"))
 
         if "@   = MP2 second order energy" in line:
+            self.metadata["methods"].append("MP2")
             energ = utils.convertor(float(line.split()[-1]), 'hartree', 'eV')
             if not hasattr(self, "mpenergies"):
                 self.mpenergies = []
             self.mpenergies.append([])
             self.mpenergies[-1].append(energ)
 
+        if "Total CCSD  energy:" in line:
+            self.metadata["methods"].append("CCSD")
+            energ = utils.convertor(float(line.split()[-1]), 'hartree', 'eV')
+            if not hasattr(self, "ccenergies"):
+                self.ccenergies = []
+            self.ccenergies.append(energ)
+
         if "Total energy CCSD(T)" in line:
+            self.metadata["methods"].append("CCSD(T)")
             energ = utils.convertor(float(line.split()[-1]), 'hartree', 'eV')
             if not hasattr(self, "ccenergies"):
                 self.ccenergies = []
@@ -1010,6 +1063,57 @@ class DALTON(logfileparser.Logfile):
             # All vibrational properties in DALTON appear in reverse
             # order.
             self.vibramans = vibramans[::-1]
+
+        # Static polarizability from **PROPERTIES/.POLARI.
+        if line.strip() == "Static polarizabilities (au)":
+            if not hasattr(self, 'polarizabilities'):
+                self.polarizabilities = []
+            polarizability = []
+            self.skip_lines(inputfile, ['d', 'b', 'directions', 'b'])
+            for _ in range(3):
+                line = next(inputfile)
+                # Separate possibly unspaced huge negative polarizability tensor
+                # element and the left adjacent column from each other.
+                line = line.replace('-', ' -')
+                polarizability.append(line.split()[1:])
+            self.polarizabilities.append(numpy.array(polarizability))
+
+        # Static and dynamic polarizability from **PROPERTIES/.ALPHA/*ABALNR.
+        if "Polarizability tensor for frequency" in line:
+            if not hasattr(self, 'polarizabilities'):
+                self.polarizabilities = []
+            polarizability = []
+            self.skip_lines(inputfile, ['d', 'directions', 'b'])
+            for _ in range(3):
+                line = next(inputfile)
+                polarizability.append(line.split()[1:])
+            self.polarizabilities.append(numpy.array(polarizability))
+
+        # Static and dynamic polarizability from **RESPONSE/*LINEAR.
+        # This section is *very* general and will need to be expanded later.
+        # For now, only form the matrix from dipole (length gauge) values.
+        if "@ FREQUENCY INDEPENDENT SECOND ORDER PROPERTIES" in line:
+
+            coord_to_idx = {'X': 0, 'Y': 1, 'Z': 2}
+
+            self.skip_line(inputfile, 'b')
+            line = next(inputfile)
+
+            polarizability_diplen = numpy.empty(shape=(3, 3))
+
+            while "Time used in linear response calculation is" not in line:
+                tokens = line.split()
+                if line.count("DIPLEN") == 2:
+                    assert len(tokens) == 8
+                    if not hasattr(self, 'polarizabilities'):
+                        self.polarizabilities = []
+                    i, j = coord_to_idx[tokens[2][0]], coord_to_idx[tokens[4][0]]
+                    polarizability_diplen[i, j] = self.float(tokens[7])
+                line = next(inputfile)
+
+            polarizability_diplen = utils.symmetrize(polarizability_diplen, use_triangle='upper')
+            if hasattr(self, 'polarizabilities'):
+                self.polarizabilities.append(polarizability_diplen)
 
         # Electronic excitations: single residues of the linear
         # response equations.

@@ -1,14 +1,9 @@
 # -*- coding: utf-8 -*-
 #
-# This file is part of cclib (http://cclib.github.io), a library for parsing
-# and interpreting the results of computational chemistry packages.
+# Copyright (c) 2016, the cclib development team
 #
-# Copyright (C) 2006-2014, the cclib development team
-#
-# The library is free software, distributed under the terms of
-# the GNU Lesser General Public version 2.1 or later. You should have
-# received a copy of the license along with cclib. You can also access
-# the full license online at http://www.gnu.org/copyleft/lgpl.html.
+# This file is part of cclib (http://cclib.github.io) and is distributed under
+# the terms of the BSD 3-Clause License.
 
 """Parser for Gaussian output files"""
 
@@ -79,6 +74,16 @@ class Gaussian(logfileparser.Logfile):
         # Flag for identifying ONIOM calculations.
         self.oniom = False
 
+        # Flag for identifying BOMD calculations.
+        # These calculations have a back-integration algorithm so that not all
+        # geometries should be kept.
+        # We also add a "time" attribute to the parser.
+        self.BOMD = False
+
+        # Do we have high-precision polarizabilities printed from a
+        # dedicated `polar` job? If so, avoid duplicate parsing.
+        self.hp_polarizabilities = False
+
     def after_parsing(self):
 
         # Correct the percent values in the etsecs in the case of
@@ -117,9 +122,23 @@ class Gaussian(logfileparser.Logfile):
         if hasattr(self, 'vibdispshp'):
             self.vibdisps = self.vibdispshp
             del self.vibdispshp
+        if hasattr(self, 'time'):
+            self.time = [self.time[i] for i in sorted(self.time.keys())]
+        if hasattr(self, 'energies_BOMD'):
+            self.set_attribute('scfenergies',
+              [self.energies_BOMD[i] for i in sorted(self.energies_BOMD.keys())])
+        if hasattr(self, 'atomcoords_BOMD'):
+            self.atomcoords= \
+              [self.atomcoords_BOMD[i] for i in sorted(self.atomcoords_BOMD.keys())]
 
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
+
+        # Extract the version number first
+        if line.strip() == "Cite this work as:":
+            line = inputfile.next()
+            self.metadata["package_version"] = line.split()[1][:-1]+ \
+                    'revision'+line.split()[-1][:-1]
 
         # This block contains some general information as well as coordinates,
         # which could be parsed in the future:
@@ -209,6 +228,142 @@ class Gaussian(logfileparser.Logfile):
             natom = int(line.split()[1])
             self.set_attribute('natom', natom)
 
+        # Basis set name
+        if line[1:15] == "Standard basis":
+            self.metadata["basis_set"] = line.split()[2]
+
+        # Dipole moment
+        # e.g. from G09
+        #  Dipole moment (field-independent basis, Debye):
+        #    X=              0.0000    Y=              0.0000    Z=              0.0930
+        # e.g. from G03
+        #     X=     0.0000    Y=     0.0000    Z=    -1.6735  Tot=     1.6735
+        # need the "field independent" part - ONIOM and other calc use diff formats
+        if line[1:39] == "Dipole moment (field-independent basis":
+
+            self.updateprogress(inputfile, "Dipole and Higher Moments", self.fupdate)
+
+            self.reference = [0.0, 0.0, 0.0]
+            self.moments = [self.reference]
+
+            tokens = inputfile.next().split()
+            # split - dipole would need to be *huge* to fail a split
+            # and G03 and G09 use different spacing
+            if len(tokens) >= 6:
+                dipole = (float(tokens[1]), float(tokens[3]), float(tokens[5]))
+
+            if not hasattr(self, 'moments'):
+                self.moments = [self.reference, dipole]
+            else:
+                self.moments.append(dipole)
+
+        if line[1:43] == "Quadrupole moment (field-independent basis":
+        # e.g. (g09)
+        # Quadrupole moment (field-independent basis, Debye-Ang):
+        #   XX=             -6.1213   YY=             -4.2950   ZZ=             -5.4175
+        #   XY=              0.0000   XZ=              0.0000   YZ=              0.0000
+        # or from g03
+        #   XX=    -6.1213   YY=    -4.2950   ZZ=    -5.4175
+            quadrupole = {}
+            for j in range(2): # two rows
+                line = inputfile.next()
+                if line[22] == '=': # g03 file
+                    for i in (1, 18, 35):
+                        quadrupole[line[i:i+4]] = float(line[i+5:i+16])
+                else:
+                    for i in (1, 27, 53):
+                        quadrupole[line[i:i+4]] = float(line[i+5:i+25])
+
+            lex = sorted(quadrupole.keys())
+            quadrupole = [quadrupole[key] for key in lex]
+
+            if not hasattr(self, 'moments') or len(self.moments) < 2:
+                self.logger.warning("Found quadrupole moments but no previous dipole")
+                self.reference = [0.0, 0.0, 0.0]
+                self.moments = [self.reference, None, quadrupole]
+            else:
+                if len(self.moments) == 2:
+                    self.moments.append(quadrupole)
+                else:
+                    assert self.moments[2] == quadrupole
+
+        if line[1:41] == "Octapole moment (field-independent basis":
+        # e.g.
+        # Octapole moment (field-independent basis, Debye-Ang**2):
+        #  XXX=              0.0000  YYY=              0.0000  ZZZ=             -0.1457  XYY=              0.0000
+        #  XXY=              0.0000  XXZ=              0.0136  XZZ=              0.0000  YZZ=              0.0000
+        #  YYZ=             -0.5848  XYZ=              0.0000
+            octapole = {}
+            for j in range(2): # two rows
+                line = inputfile.next()
+                if line[22] == '=': # g03 file
+                    for i in (1, 18, 35, 52):
+                        octapole[line[i:i+4]] = float(line[i+5:i+16])
+                else:
+                    for i in (1, 27, 53, 79):
+                        octapole[line[i:i+4]] = float(line[i+5:i+25])
+
+            # last line only 2 moments
+            line = inputfile.next()
+            if line[22] == '=': # g03 file
+                for i in (1, 18):
+                    octapole[line[i:i+4]] = float(line[i+5:i+16])
+            else:
+                for i in (1, 27):
+                    octapole[line[i:i+4]] = float(line[i+5:i+25])
+
+            lex = sorted(octapole.keys())
+            octapole = [octapole[key] for key in lex]
+
+            if not hasattr(self, 'moments') or len(self.moments) < 3:
+                self.logger.warning("Found octapole moments but no previous dipole or quadrupole")
+                self.reference = [0.0, 0.0, 0.0]
+                self.moments = [self.reference, None, None, octapole]
+            else:
+                if len(self.moments) == 3:
+                    self.moments.append(octapole)
+                else:
+                    assert self.moments[3] == octapole
+
+        if line[1:20] == "Hexadecapole moment":
+        # e.g.
+        # Hexadecapole moment (field-independent basis, Debye-Ang**3):
+        # XXXX=             -3.2614 YYYY=             -6.8264 ZZZZ=             -4.9965 XXXY=              0.0000
+        # XXXZ=              0.0000 YYYX=              0.0000 YYYZ=              0.0000 ZZZX=              0.0000
+        # ZZZY=              0.0000 XXYY=             -1.8585 XXZZ=             -1.4123 YYZZ=             -1.7504
+        # XXYZ=              0.0000 YYXZ=              0.0000 ZZXY=              0.0000
+            hexadecapole = {}
+            # read three lines worth of 4 moments per line
+            for j in range(3):
+                line = inputfile.next()
+                if line[22] == '=': # g03 file
+                    for i in (1, 18, 35, 52):
+                        hexadecapole[line[i:i+4]] = float(line[i+5:i+16])
+                else:
+                    for i in (1, 27, 53, 79):
+                        hexadecapole[line[i:i+4]] = float(line[i+5:i+25])
+
+            # last line only 3 moments
+            line = inputfile.next()
+            if line[22] == '=': # g03 file
+                for i in (1, 18, 35):
+                    hexadecapole[line[i:i+4]] = float(line[i+5:i+16])
+            else:
+                for i in (1, 27, 53):
+                    hexadecapole[line[i:i+4]] = float(line[i+5:i+25])
+
+            lex = sorted(hexadecapole.keys())
+            hexadecapole = [hexadecapole[key] for key in lex]
+
+            if not hasattr(self, 'moments') or len(self.moments) < 4:
+                self.reference = [0.0, 0.0, 0.0]
+                self.moments = [self.reference, None, None, None, hexadecapole]
+            else:
+                if len(self.moments) == 4:
+                    self.moments.append(hexadecapole)
+                else:
+                    assert self.moments[4] == hexadecapole
+
         # Catch message about completed optimization.
         if line[1:23] == "Optimization completed":
 
@@ -230,6 +385,8 @@ class Gaussian(logfileparser.Logfile):
 
         # Extract the atomic numbers and coordinates from the input orientation,
         #   in the event the standard orientation isn't available.
+        # Don't extract from Input or Z-matrix orientation in a BOMD run, as only
+        #   the final geometry should be kept but extract inputatoms.
         if line.find("Input orientation") > -1 or line.find("Z-Matrix orientation") > -1:
 
             # If this is a counterpoise calculation, this output means that
@@ -238,7 +395,7 @@ class Gaussian(logfileparser.Logfile):
 
             self.updateprogress(inputfile, "Attributes", self.cupdate)
 
-            if not hasattr(self, "inputcoords"):
+            if not self.BOMD and  not hasattr(self, "inputcoords"):
                 self.inputcoords = []
             self.inputatoms = []
 
@@ -252,10 +409,55 @@ class Gaussian(logfileparser.Logfile):
                 atomcoords.append(list(map(float, broken[3:6])))
                 line = next(inputfile)
 
-            self.inputcoords.append(atomcoords)
+            if not self.BOMD: self.inputcoords.append(atomcoords)
 
             self.set_attribute('atomnos', self.inputatoms)
             self.set_attribute('natom', len(self.inputatoms))
+
+        if self.BOMD and line.startswith(' Summary information for step'):
+
+            # We keep time and energies_BOMD and coordinates in a dictionary
+            #  because steps can be recalculated, and we need to overwite the
+            #  previous data
+
+            broken = line.split()
+            step = int(broken[-1])
+            line = next(inputfile)
+            broken = line.split()
+            if not hasattr(self, "time"):
+                self.set_attribute('time', {step:float(broken[-1])})
+            else:
+                self.time[step] = float(broken[-1])
+
+            line = next(inputfile)
+            broken = line.split(';')[1].split()
+            ene = utils.convertor(self.float(broken[-1]), "hartree", "eV")
+            if not hasattr(self, "energies_BOMD"):
+                self.set_attribute('energies_BOMD', {step:ene})
+            else:
+                self.energies_BOMD[step] = ene
+
+            self.updateprogress(inputfile, "Attributes", self.cupdate)
+
+            if not hasattr(self, "atomcoords_BOMD"):
+                self.atomcoords_BOMD = {}
+            #self.inputatoms = []
+
+            self.skip_lines(inputfile, ['EKin', 'Angular', 'JX', 'Total', 'Total', 'Cartesian'])
+
+            atomcoords = []
+            line = next(inputfile)
+            while not "MW cartesian" in line:
+                broken = line.split()
+                atomcoords.append(list(map(self.float, (broken[3], broken[5], broken[7]))))
+            #    self.inputatoms.append(int(broken[1]))
+                line = next(inputfile)
+
+            self.atomcoords_BOMD[step] = atomcoords
+
+            #self.set_attribute('atomnos', self.inputatoms)
+            #self.set_attribute('natom', len(self.inputatoms))
+
 
         # Extract the atomic masses.
         # Typical section:
@@ -420,7 +622,8 @@ class Gaussian(logfileparser.Logfile):
                         shell_line = line
 
         # Find the targets for SCF convergence (QM calcs).
-        if line[1:44] == 'Requested convergence on RMS density matrix':
+        # Not for BOMD as targets are not available in the summary
+        if not self.BOMD and line[1:44] == 'Requested convergence on RMS density matrix':
 
             if not hasattr(self, "scftargets"):
                 self.scftargets = []
@@ -524,7 +727,14 @@ class Gaussian(logfileparser.Logfile):
 
         # Note: this needs to follow the section where 'SCF Done' is used
         #   to terminate a loop when extracting SCF convergence information.
-        if line[1:9] == 'SCF Done':
+        if not self.BOMD and line[1:9] == 'SCF Done':
+
+            t1 = line.split()[2]
+            if t1 == 'E(RHF)':
+                self.metadata["methods"].append("HF")
+            else:
+                self.metadata["methods"].append("DFT")
+                self.metadata["functional"] = t1[t1.index("(") + 2:t1.rindex(")")]
 
             if not hasattr(self, "scfenergies"):
                 self.scfenergies = []
@@ -547,6 +757,7 @@ class Gaussian(logfileparser.Logfile):
         #  E2 =    -0.9505918144D+00 EUMP2 =    -0.28670924198852D+03
         # Warning! this output line is subtly different for MP3/4/5 runs
         if "EUMP2" in line[27:34]:
+            self.metadata["methods"].append("MP2")
 
             if not hasattr(self, "mpenergies"):
                 self.mpenergies = []
@@ -557,6 +768,7 @@ class Gaussian(logfileparser.Logfile):
         # Example MP3 output line:
         #  E3=       -0.10518801D-01     EUMP3=      -0.75012800924D+02
         if line[34:39] == "EUMP3":
+            self.metadata["methods"].append("MP3")
 
             mp3energy = self.float(line.split("=")[2])
             self.mpenergies[-1].append(utils.convertor(mp3energy, "hartree", "eV"))
@@ -567,6 +779,7 @@ class Gaussian(logfileparser.Logfile):
         #  E4(SDTQ)= -0.32671209D-02        UMP4(SDTQ)= -0.75016068045D+02
         # Energy for most substitutions is used only (SDTQ by default)
         if line[34:42] == "UMP4(DQ)":
+            self.metadata["methods"].append("MP4")
 
             mp4energy = self.float(line.split("=")[2])
             line = next(inputfile)
@@ -580,6 +793,7 @@ class Gaussian(logfileparser.Logfile):
         # Example MP5 output line:
         #  DEMP5 =  -0.11048812312D-02 MP5 =  -0.75017172926D+02
         if line[29:32] == "MP5":
+            self.metadata["methods"].append("MP5")
             mp5energy = self.float(line.split("=")[2])
             self.mpenergies[-1].append(utils.convertor(mp5energy, "hartree", "eV"))
 
@@ -590,10 +804,12 @@ class Gaussian(logfileparser.Logfile):
         # but append only the last one to ccenergies.
         # Only the highest level energy is appended - ex. CCSD(T), not CCSD.
         if line[1:10] == "DE(Corr)=" and line[27:35] == "E(CORR)=":
+            self.metadata["methods"].append("CCSD")
             self.ccenergy = self.float(line.split()[3])
         if line[1:10] == "T5(CCSD)=":
             line = next(inputfile)
             if line[1:9] == "CCSD(T)=":
+                self.metadata["methods"].append("CCSD-T")
                 self.ccenergy = self.float(line.split()[1])
         if line[12:53] == "Population analysis using the SCF density":
             if hasattr(self, "ccenergy"):
@@ -662,7 +878,11 @@ class Gaussian(logfileparser.Logfile):
         #   hch        1.75406   0.09547   0.00000   0.24861   0.24861   2.00267
         #   hchh       2.09614   0.01261   0.00000   0.16875   0.16875   2.26489
         #         Item               Value     Threshold  Converged?
-        if line[37:43] == "Forces":
+
+        # We could get the gradients in BOMD, but it is more complex because
+        #   they are not in the summary, and they are not as relevant as for
+        #   an optimization
+        if not self.BOMD and line[37:43] == "Forces":
 
             if not hasattr(self, "grads"):
                 self.grads = []
@@ -1235,9 +1455,9 @@ class Gaussian(logfileparser.Logfile):
                     for j in range(0, len(part), 10):
                         temp.append(float(part[j:j+10]))
                     if beta:
-                        self.mocoeffs[1][base:base + len(part) / 10, i] = temp
+                        self.mocoeffs[1][base:base + len(part) // 10, i] = temp
                     else:
-                        mocoeffs[0][base:base + len(part) / 10, i] = temp
+                        mocoeffs[0][base:base + len(part) // 10, i] = temp
 
                 if base == 0 and not beta:  # Do the last update of atombasis
                     self.atombasis.append(atombasis)
@@ -1307,7 +1527,7 @@ class Gaussian(logfileparser.Logfile):
                     for j in range(0, len(part), 10):
                         temp.append(float(part[j:j+10]))
 
-                    nocoeffs[base:base + len(part) / 10, i] = temp
+                    nocoeffs[base:base + len(part) // 10, i] = temp
 
                 # Do the last update of atombasis.
                 if base == 0:
@@ -1396,6 +1616,10 @@ class Gaussian(logfileparser.Logfile):
         if line[1:7] == "ONIOM:":
             self.oniom = True
 
+        # This will be printed only during BOMD calcs;
+        if line.startswith(" INPUT DATA FOR L118"):
+            self.BOMD = True
+
         # Atomic charges are straightforward to parse, although the header
         # has changed over time somewhat.
         #
@@ -1456,9 +1680,55 @@ class Gaussian(logfileparser.Logfile):
         if "Sum of electronic and thermal Enthalpies" in line:
             self.set_attribute('enthalpy', float(line.split()[6]))
         if "Sum of electronic and thermal Free Energies=" in line:
-            self.set_attribute('freenergy', float(line.split()[7]))
+            self.set_attribute('freeenergy', float(line.split()[7]))
         if line[1:12] == "Temperature":
             self.set_attribute('temperature', float(line.split()[1]))
+            self.set_attribute('pressure', float(line.split()[4]))
+
+        # Static polarizability (from `polar`), lower triangular
+        # matrix.
+        if line[1:26] == "SCF Polarizability for W=":
+            self.hp_polarizabilities = True
+            if not hasattr(self, 'polarizabilities'):
+                self.polarizabilities = []
+            polarizability = numpy.zeros(shape=(3, 3))
+            self.skip_line(inputfile, 'directions')
+            for i in range(3):
+                line = next(inputfile)
+                polarizability[i, :i+1] = [self.float(x) for x in line.split()[1:]]
+
+            polarizability = utils.symmetrize(polarizability, use_triangle='lower')
+            self.polarizabilities.append(polarizability)
+
+        # Static polarizability (from `freq`), lower triangular matrix.
+        if line[1:16] == "Polarizability=":
+            self.hp_polarizabilities = True
+            if not hasattr(self, 'polarizabilities'):
+                self.polarizabilities = []
+            polarizability = numpy.zeros(shape=(3, 3))
+            polarizability_list = []
+            polarizability_list.extend([line[16:31], line[31:46], line[46:61]])
+            line = next(inputfile)
+            polarizability_list.extend([line[16:31], line[31:46], line[46:61]])
+            indices = numpy.tril_indices(3)
+            polarizability[indices] = [self.float(x) for x in polarizability_list]
+            polarizability = utils.symmetrize(polarizability, use_triangle='lower')
+            self.polarizabilities.append(polarizability)
+
+        # Static polarizability, compressed into a single line from
+        # terse printing.
+        # Order is XX, YX, YY, ZX, ZY, ZZ (lower triangle).
+        if line[2:23] == "Exact polarizability:":
+            if not self.hp_polarizabilities:
+                if not hasattr(self, 'polarizabilities'):
+                    self.polarizabilities = []
+                polarizability = numpy.zeros(shape=(3, 3))
+                indices = numpy.tril_indices(3)
+                polarizability[indices] = [self.float(x) for x in
+                                           [line[23:31], line[31:39], line[39:47], line[47:55], line[55:63], line[63:71]]]
+                polarizability = utils.symmetrize(polarizability, use_triangle='lower')
+                self.polarizabilities.append(polarizability)
+
 
 
 if __name__ == "__main__":

@@ -1,12 +1,9 @@
-# This file is part of cclib (http://cclib.github.io), a library for parsing
-# and interpreting the results of computational chemistry packages.
+# -*- coding: utf-8 -*-
 #
-# Copyright (C) 2006-2010,2012-2015, the cclib development team
+# Copyright (c) 2016, the cclib development team
 #
-# The library is free software, distributed under the terms of
-# the GNU Lesser General Public version 2.1 or later. You should have
-# received a copy of the license along with cclib. You can also access
-# the full license online at http://www.gnu.org/copyleft/lgpl.html.
+# This file is part of cclib (http://cclib.github.io) and is distributed under
+# the terms of the BSD 3-Clause License.
 
 """Test single point logfiles in cclib."""
 
@@ -105,7 +102,8 @@ class GenericSPTest(unittest.TestCase):
     @skipForParser('Molpro', 'atommasses not implemented yet')
     @skipForParser('NWChem', 'atommasses not implemented yet')
     @skipForParser('ORCA', 'atommasses not implemented yet')
-    @skipForParser('Psi', 'atommasses not implemented yet')
+    @skipForLogfile('Psi/basicPsi3', 'atommasses not implemented yet')
+    @skipForLogfile('Psi/basicPsi4.0b5', 'atommasses not implemented yet')
     @skipForParser('QChem', 'atommasses not implemented yet')
     def testatommasses(self):
         """Do the atom masses sum up to the molecular mass?"""
@@ -243,6 +241,23 @@ class GenericSPTest(unittest.TestCase):
             for m in moment32:
                 self.assertEquals(m, 0.0)
 
+    @skipForParser('ADF', 'Does not support metadata yet')
+    @skipForParser('GAMESS', 'Does not support metadata yet')
+    @skipForParser('GAMESSUK', 'Does not support metadata yet')
+    @skipForParser('Gaussian', 'Does not support metadata yet')
+    @skipForParser('Jaguar', 'Does not support metadata yet')
+    @skipForParser('Molpro', 'Does not support metadata yet')
+    @skipForParser('NWChem', 'Does not support metadata yet')
+    @skipForParser('ORCA', 'Does not support metadata yet')
+    @skipForParser('Psi', 'Does not support metadata yet')
+    @skipForParser('QChem', 'Does not support metadata yet')
+    def testmetadata(self):
+        """Does metadata have expected keys and values?"""
+        self.assertTrue(hasattr(self.data, "metadata"))
+        self.assertIn("basis_set", self.data.metadata)
+        self.assertIn("methods", self.data.metadata)
+        self.assertIn("package", self.data.metadata)
+        self.assertIn("package_version", self.data.metadata)
 
 class ADFSPTest(GenericSPTest):
     """Customized restricted single point unittest"""

@@ -1,12 +1,9 @@
-# This file is part of cclib (http://cclib.github.io), a library for parsing
-# and interpreting the results of computational chemistry packages.
+# -*- coding: utf-8 -*-
 #
-# Copyright (C) 2014,2015, the cclib development team
+# Copyright (c) 2016, the cclib development team
 #
-# The library is free software, distributed under the terms of
-# the GNU Lesser General Public version 2.1 or later. You should have
-# received a copy of the license along with cclib. You can also access
-# the full license online at http://www.gnu.org/copyleft/lgpl.html.
+# This file is part of cclib (http://cclib.github.io) and is distributed under
+# the terms of the BSD 3-Clause License.
 
 """Test scan logfiles in cclib"""
 
@@ -30,7 +27,7 @@ class GenericScanTest(unittest.TestCase):
     def testnumindices(self):
         """Do the number of indices match number of scan points."""
 
-        if self.data._attrtypes["optdone"] is bool:
+        if self.data._attributes["optdone"].type is bool:
             self.assertEquals(self.data.optdone, True)
         else:
             self.assertEquals(len(self.data.optdone), 12 + self.extra)
@@ -38,7 +35,7 @@ class GenericScanTest(unittest.TestCase):
     def testindices(self):
         """Do the indices match the results from geovalues."""
 
-        if self.data._attrtypes["optdone"] is bool:
+        if self.data._attributes["optdone"].type is bool:
             assert self.data.optdone and numpy.all(self.data.geovalues[-1] <= self.data.geotargets)
         else:
             indexes = self.data.optdone
@@ -57,7 +54,7 @@ class GenericScanTest(unittest.TestCase):
         # The input coordinates were at a stationary point.
         self.assertEquals(self.data.optstatus[0], OPT_DONE)
 
-        if self.data._attrtypes["optdone"] is bool:
+        if self.data._attributes["optdone"].type is bool:
             self.assertEquals(self.data.optstatus[-1], OPT_DONE)
         else:
             self.assertEqual(len(self.data.optstatus), len(optdone))

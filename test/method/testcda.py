@@ -1,31 +1,31 @@
-# This file is part of cclib (http://cclib.github.io), a library for parsing
-# and interpreting the results of computational chemistry packages.
+# -*- coding: utf-8 -*-
 #
-# Copyright (C) 2007-2014, the cclib development team
+# Copyright (c) 2016, the cclib development team
 #
-# The library is free software, distributed under the terms of
-# the GNU Lesser General Public version 2.1 or later. You should have
-# received a copy of the license along with cclib. You can also access
-# the full license online at http://www.gnu.org/copyleft/lgpl.html.
+# This file is part of cclib (http://cclib.github.io) and is distributed under
+# the terms of the BSD 3-Clause License.
 
 """Test the CDA method in cclib"""
 
 from __future__ import print_function
+
+import sys
 import os
 import logging
 import unittest
 
 import numpy
 
-from testall import getfile
+sys.path.append("..")
+from test_data import getdatafile
 from cclib.method import CDA
 from cclib.parser import Gaussian
 
 
 def main(log=True):
-    data1, logfile1 = getfile(Gaussian, "CDA", "BH3CO-sp.log")
-    data2, logfile2 = getfile(Gaussian, "CDA", "BH3.log")
-    data3, logfile3 = getfile(Gaussian, "CDA", "CO.log")
+    data1, logfile1 = getdatafile(Gaussian, "CDA", ["BH3CO-sp.log"])
+    data2, logfile2 = getdatafile(Gaussian, "CDA", ["BH3.log"])
+    data3, logfile3 = getdatafile(Gaussian, "CDA", ["CO.log"])
     fa = CDA(data1)
     if not log:
         fa.logger.setLevel(logging.ERROR)
@@ -47,7 +47,7 @@ def printResults():
                                             fa.donations[spin][i],
                                             fa.bdonations[spin][i],
                                             fa.repulsions[spin][i]))
-            
+
 
     print("---------------------------")
     print("T:  %7.3f %7.3f %7.3f" % (fa.donations[0].sum(),
@@ -57,10 +57,11 @@ def printResults():
 
 
 class CDATest(unittest.TestCase):
+
     def runTest(self):
         """Testing CDA results against Frenking's code"""
         fa = main(log=False)
-        
+
         donation = fa.donations[0].sum()
         bdonation = fa.bdonations[0].sum()
         repulsion = fa.repulsions[0].sum()
@@ -70,9 +71,6 @@ class CDATest(unittest.TestCase):
         self.assertAlmostEqual(repulsion, -0.334, 3)
 
 
-tests = [CDATest]
-
-        
 if __name__ == "__main__":
     printResults()
     unittest.TextTestRunner(verbosity=2).run(unittest.makeSuite(CDATest))
