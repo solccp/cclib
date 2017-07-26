@@ -595,7 +595,10 @@ class ORCA(logfileparser.Logfile):
                 msg += "may be non-zero."
                 self.logger.warning(msg)
 
-            self.vibfreqs = self.vibfreqs[6:]
+            if (self.vibfreqs[5] > 0):
+                self.vibfreqs = self.vibfreqs[5:]
+            else:
+                self.vibfreqs = self.vibfreqs[6:]
 
         if line[0:12] == "NORMAL MODES":
             """ Format:
